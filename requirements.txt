@@ -1,0 +1,7 @@
+# Runtime and notebook dependencies, pinned for reproducibility.
+# Tested with Python 3.12 (the devcontainer uses Python 3.13).
+numpy==2.2.6
+pandas==2.3.3
+torch==2.6.0
+transformers==4.57.6
+matplotlib==3.10.0

@@ -1,0 +1,12 @@
+__pycache__
+.env
+.learn
+.venv
+.ipynb_checkpoints
+
+# Model weights are downloaded at runtime and must never be committed.
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.onnx
