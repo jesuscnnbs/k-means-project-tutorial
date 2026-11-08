@@ -1,112 +1,103 @@
-# Data Science Project Boilerplate
+# Agrupación de casas de California con K-Means
 
-This boilerplate is designed to kickstart data science projects by providing a basic setup for database connections, data processing, and machine learning model development. It includes a structured folder organization for your datasets and a set of pre-defined Python packages necessary for most data science tasks.
+Clasificación de casas por **región** y **renta media** usando el dataset
+*California Housing* (censo de 1990, 20.640 grupos de bloques censales). El
+proyecto encadena un modelo no supervisado y otro supervisado:
 
-## Structure
+1. **K-Means (k = 6)** agrupa las casas usando `Latitude`, `Longitude` y
+   `MedInc`.
+2. Las etiquetas generadas se añaden al dataset como columna `cluster`.
+3. Un **clasificador supervisado** aprende a reproducir esas etiquetas para
+   puntos nuevos.
+4. Ambos modelos se guardan en `models/`.
 
-The project is organized as follows:
+## Resultados
 
-- **`src/app.py`** → Main Python script where your project will run.
-- **`src/explore.ipynb`** → Notebook for exploration and testing. Once exploration is complete, migrate the clean code to `app.py`.
-- **`src/utils.py`** → Auxiliary functions, such as database connection.
-- **`requirements.txt`** → List of required Python packages.
-- **`models/`** → Will contain your SQLAlchemy model classes.
-- **`data/`** → Stores datasets at different stages:
-  - **`data/raw/`** → Raw data.
-  - **`data/interim/`** → Temporarily transformed data.
-  - **`data/processed/`** → Data ready for analysis.
+**K-Means (k = 6, train escalado).** Inercia 8.069,2 y silhouette de test 0,399.
+Los grupos combinan región y renta:
 
+| Cluster | % train | MedInc medio | Zona aproximada |
+| :-----: | :-----: | :----------: | --------------- |
+| 0 | 8,0 % | 2,6 | Valle Central (Fresno–Bakersfield) |
+| 1 | 20,5 % | 5,3 | Los Ángeles, Orange County y San Diego |
+| 2 | 2,7 % | 10,4 | Enclaves de renta alta en todo el estado |
+| 3 | 23,8 % | 2,8 | Sacramento, norte y costa |
+| 4 | 13,6 % | 5,5 | Bahía de San Francisco y norte |
+| 5 | 31,4 % | 2,8 | Inland Empire y sur metropolitano |
 
-## ⚡ Initial Setup in Codespaces (Recommended)
+**Clasificador supervisado.** Random Forest gana la validación cruzada
+(0,9939 ± 0,0008) frente a Logistic Regression (0,9901) y KNN (0,9882). En
+test: accuracy **0,9956**, balanced accuracy **0,9923** y F1 macro **0,9940**
+(18 errores de 4.128 puntos). El accuracy es alto porque las etiquetas se
+derivan de las mismas features, no porque el cluster sea un objetivo externo.
 
-No manual setup is required, as **Codespaces is automatically configured** with the predefined files created by the academy for you. Just follow these steps:
+| Artefacto | Contenido |
+| --------- | --------- |
+| `models/kmeans_housing.joblib` | `StandardScaler` + `KMeans(n_clusters=6)` |
+| `models/classifier_housing.joblib` | `StandardScaler` + `RandomForestClassifier` |
+| `models/metadata.json` | features, métricas, perfiles de cluster y versiones |
+| `data/processed/housing_clusters.csv` | train + test etiquetados con `cluster` |
 
-1. **Wait for the environment to configure automatically**.
-   - All necessary packages and the database will install themselves.
-   - The automatically created `username` and `db_name` are in the **`.env`** file at the root of the project.
-2. **Once Codespaces is ready, you can start working immediately**.
+El detalle de métricas, gráficos y conclusiones está en
+[`src/explore.ipynb`](src/explore.ipynb). El resumen y las decisiones de diseño
+están en [`CONTEXT.md`](CONTEXT.md).
 
+## Estructura
 
-## 💻 Local Setup (Only if you can't use Codespaces)
+```
+data/raw/housing.csv                     dataset original
+data/processed/housing_clusters.csv      dataset etiquetado (train + test)
+models/                                  artefactos .joblib y metadata.json
+src/explore.ipynb                        exploración, clustering y evaluación
+src/app.py                               pipeline reproducible de extremo a extremo
+```
 
-**Prerequisites**
+## Instalación y ejecución
 
-Make sure you have Python 3.11+ installed on your machine. You will also need pip to install the Python packages.
-
-**Installation**
-
-Clone the project repository to your local machine.
-
-Navigate to the project directory and install the required Python packages:
+Requiere Python 3.12.
 
 ```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-**Create a database (if necessary)**
-
-Create a new database within the Postgres engine by customizing and executing the following command:
-
-```bash
-$ psql -U postgres -c "DO \$\$ BEGIN 
-    CREATE USER my_user WITH PASSWORD 'my_password'; 
-    CREATE DATABASE my_database OWNER my_user; 
-END \$\$;"
-```
-Connect to the Postgres engine to use your database, manipulate tables, and data:
-
-```bash
-$ psql -U my_user -d my_database
-```
-
-Once inside PSQL, you can create tables, run queries, insert, update, or delete data, and much more!
-
-**Environment Variables**
-
-Create a .env file in the root directory of the project to store your environment variables, such as your database connection string:
-
-```makefile
-DATABASE_URL="postgresql://<USER>:<PASSWORD>@<HOST>:<PORT>/<DB_NAME>"
-
-#example
-DATABASE_URL="postgresql://my_user:my_password@localhost:5432/my_database"
-```
-
-## Running the Application
-
-To run the application, execute the app.py script from the root directory of the project:
+Reproducir el pipeline completo y regenerar los artefactos:
 
 ```bash
 python src/app.py
 ```
 
-## Adding Models
+Abrir el análisis:
 
-To add SQLAlchemy model classes, create new Python script files within the models/ directory. These classes should be defined according to your database schema.
-
-Example model definition (`models/example_model.py`):
-
-```py
-from sqlalchemy.orm import declarative_base
-from sqlalchemy import String
-from sqlalchemy.orm import Mapped, mapped_column
-
-Base = declarative_base()
-
-class ExampleModel(Base):
-    __tablename__ = 'example_table'
-    id: Mapped[int] = mapped_column(primary_key=True)
-    username: Mapped[str] = mapped_column(unique=True)
+```bash
+jupyter lab src/explore.ipynb
 ```
 
-## Working with Data
+## Uso de los modelos
 
-You can place your raw datasets in the data/raw directory, intermediate datasets in data/interim, and processed datasets ready for analysis in data/processed.
+```python
+import joblib
+import pandas as pd
 
-To process data, you can modify the app.py script to include your data processing steps, using pandas for data manipulation and analysis.
+kmeans = joblib.load("models/kmeans_housing.joblib")
+classifier = joblib.load("models/classifier_housing.joblib")
 
-## Contributors
+nuevas_casas = pd.DataFrame(
+    {
+        "Latitude": [34.05, 37.77],
+        "Longitude": [-118.24, -122.42],
+        "MedInc": [3.5, 8.1],
+    }
+)
 
-This template was built as part of the [Data Science and Machine Learning Bootcamp](https://4geeksacademy.com/us/coding-bootcamps/datascience-machine-learning) by 4Geeks Academy by [Alejandro Sanchez](https://twitter.com/alesanchezr) and many other contributors. Learn more about [4Geeks Academy BootCamp programs](https://4geeksacademy.com/us/programs) here.
+print(kmeans.predict(nuevas_casas))     # cluster directo de K-Means
+print(classifier.predict(nuevas_casas)) # mismo cluster vía clasificador
+```
 
-Other templates and resources like this can be found on the school's GitHub page.
+## Nota metodológica
+
+Las etiquetas del clasificador provienen del propio K-Means, calculado sobre
+las mismas tres features. Por eso un accuracy cercano al 100% es esperado y no
+demuestra capacidad predictiva sobre una variable externa: demuestra que el
+clasificador reproduce fielmente la partición del K-Means.

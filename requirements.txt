@@ -1,7 +1,13 @@
-# Runtime and notebook dependencies, pinned for reproducibility.
-# Tested with Python 3.12 (the devcontainer uses Python 3.13).
-numpy==2.2.6
-pandas==2.3.3
-torch==2.6.0
-transformers==4.57.6
-matplotlib==3.10.0
+# Runtime y dependencias del proyecto, fijadas para reproducibilidad.
+# Probado con Python 3.12.
+numpy==2.5.4
+pandas==3.1.1
+scikit-learn==1.9.1
+matplotlib==3.11.2
+seaborn==0.13.2
+joblib==1.6.0
+
+# Notebook: ejecución y conversión.
+jupyterlab==4.6.6
+ipykernel==7.4.0
+nbconvert==7.17.2

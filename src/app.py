@@ -1,221 +1,356 @@
-"""Inferencia de producción para el sentimiento de las reseñas de Harbor House Café.
+"""Agrupación de casas de California por región e ingreso medio.
 
-Carga el modelo ``nlptown`` fijado una sola vez, puntúa cada reseña de
-``data/raw/reviews.csv`` y escribe el dataset enriquecido en
-``data/processed/reviews_with_sentiment.csv``.
+Pipeline reproducible del proyecto:
 
-Los pesos se descargan de Hugging Face en runtime y se cachean fuera del
-repositorio. Nunca se guardan en este proyecto.
+1. Carga ``data/raw/housing.csv`` y usa solo ``Latitude``, ``Longitude`` y
+   ``MedInc``.
+2. Divide en train/test y escala las features.
+3. Entrena un K-Means de 6 clusters con el conjunto de train.
+4. Usa las etiquetas del K-Means para entrenar un clasificador supervisado.
+5. Guarda ambos modelos en ``models/`` y el dataset etiquetado en
+   ``data/processed/``.
+
+Ejecución: ``python src/app.py`` desde la raíz del repositorio.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import joblib
+import numpy as np
 import pandas as pd
-from transformers import (
-    AutoModelForSequenceClassification,
-    AutoTokenizer,
-    pipeline,
+import sklearn
+from sklearn.cluster import KMeans
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    accuracy_score,
+    balanced_accuracy_score,
+    classification_report,
+    confusion_matrix,
+    f1_score,
+    silhouette_score,
 )
-from transformers.utils import logging as transformers_logging
+from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
-# Anclamos las rutas a la raíz del repositorio, no al directorio desde el
-# que se ejecute el script. Así `python src/app.py` funciona desde cualquier CWD.
+# Anclamos las rutas a la raíz del repositorio para que funcione desde
+# cualquier directorio de trabajo.
 ROOT = Path(__file__).resolve().parents[1]
-RAW_PATH = ROOT / "data" / "raw" / "reviews.csv"
-PROCESSED_PATH = ROOT / "data" / "processed" / "reviews_with_sentiment.csv"
+RAW_PATH = ROOT / "data" / "raw" / "housing.csv"
+PROCESSED_PATH = ROOT / "data" / "processed" / "housing_clusters.csv"
+MODELS_DIR = ROOT / "models"
+KMEANS_PATH = MODELS_DIR / "kmeans_housing.joblib"
+CLASSIFIER_PATH = MODELS_DIR / "classifier_housing.joblib"
+METADATA_PATH = MODELS_DIR / "metadata.json"
 
-# Modelo y revisión inmutable: el resultado no cambia si actualizan el repo.
-MODEL_ID = "nlptown/bert-base-multilingual-uncased-sentiment"
-# Commit inmutable de Hugging Face: no usar "main" ni "latest".
-MODEL_REVISION = "8f6f4e3a8f70be4b65d3a4a8762b6d781cda240d"
-
-# Parámetros de inferencia. 500 reseñas cortas se procesan en CPU sin problema.
-EXPECTED_ROWS = 500
-BATCH_SIZE = 32
-MAX_LENGTH = 512
-
-# Traducimos la salida ordinal del modelo (1-5 estrellas) a tres bandas.
-STAR_TO_BAND = {
-    1: "negative",
-    2: "negative",
-    3: "neutral",
-    4: "positive",
-    5: "positive",
-}
-# Orden estable para los resúmenes y las tablas.
-SENTIMENT_ORDER = ["positive", "neutral", "negative"]
-# Columnas exactas que se escriben en el CSV de producción.
-OUTPUT_COLUMNS = [
-    "review_id",
-    "rating",
-    "review_text",
-    "predicted_stars",
-    "predicted_label",
-    "predicted_sentiment",
-    "confidence",
-    "expected_stars",
-    "prob_1_star",
-    "prob_2_star",
-    "prob_3_star",
-    "prob_4_star",
-    "prob_5_star",
-    "star_implied_sentiment",
-    "agrees_with_rating",
-    "is_false_negative",
-    "model_id",
-    "model_revision",
-]
+# Columnas que pide el enunciado: ubicación y renta media del bloque censal.
+FEATURES = ["Latitude", "Longitude", "MedInc"]
+# 6 clusters fijados por el enunciado.
+N_CLUSTERS = 6
+# Semilla única para split, K-Means y modelos: resultados reproducibles.
+RANDOM_STATE = 42
+TEST_SIZE = 0.2
+EXPECTED_ROWS = 20_640
 
 
-def load_reviews(path: Path = RAW_PATH) -> pd.DataFrame:
-    """Carga y limpia mínimamente las reseñas de origen."""
+def load_data(path: Path = RAW_PATH) -> pd.DataFrame:
+    """Carga el CSV y valida el contrato mínimo del dataset."""
     if not path.exists():
-        raise FileNotFoundError(f"Raw reviews not found: {path}")
+        raise FileNotFoundError(
+            f"No se encontró {path}. Descarga housing.csv en data/raw/."
+        )
 
-    # Validamos el contrato de columnas antes de transformar nada.
     df = pd.read_csv(path)
-    expected_columns = {"review_id", "rating", "review_text"}
-    missing_columns = expected_columns.difference(df.columns)
-    if missing_columns:
-        raise ValueError(f"Missing columns in {path}: {sorted(missing_columns)}")
 
-    # Normalizamos tipos y espacios; no cambiamos el contenido semántico.
-    df = df.copy()
-    df["rating"] = pd.to_numeric(df["rating"], errors="raise").astype(int)
-    df["review_text"] = (
-        df["review_text"].astype("string").str.replace(r"\s+", " ", regex=True).str.strip()
-    )
+    missing = set(FEATURES).difference(df.columns)
+    if missing:
+        raise ValueError(f"Faltan columnas obligatorias: {sorted(missing)}")
 
-    # Controles de calidad: tamaño esperado, IDs únicos, ratings válidos y texto.
+    # Trabajamos solo con las tres columnas del enunciado.
+    df = df[FEATURES].copy()
+
     if len(df) != EXPECTED_ROWS:
-        raise ValueError(f"Expected {EXPECTED_ROWS} reviews, found {len(df)}")
-    if df["review_id"].duplicated().any():
-        raise ValueError("Duplicated review_id values found")
-    if not df["rating"].between(1, 5).all():
-        raise ValueError("Ratings must be between 1 and 5")
-    if df["review_text"].isna().any() or (df["review_text"] == "").any():
-        raise ValueError("Empty review_text values found")
+        raise ValueError(f"Se esperaban {EXPECTED_ROWS} filas, hay {len(df)}")
+    if df.isna().any().any():
+        raise ValueError("Hay valores nulos en las features seleccionadas")
+    if df["MedInc"].le(0).any():
+        raise ValueError("MedInc debe ser estrictamente positivo")
+    if not df["Latitude"].between(32, 43).all():
+        raise ValueError("Latitud fuera del rango de California")
+    if not df["Longitude"].between(-125, -113).all():
+        raise ValueError("Longitud fuera del rango de California")
 
     return df
 
 
-def load_sentiment_pipeline():
-    """Carga el modelo fijado una vez y devuelve un pipeline reutilizable."""
-    transformers_logging.set_verbosity_error()
+def split_data(df: pd.DataFrame) -> tuple[pd.Index, pd.Index]:
+    """Devuelve los índices de train y test con la semilla del proyecto."""
+    train_index, test_index = train_test_split(
+        df.index, test_size=TEST_SIZE, random_state=RANDOM_STATE
+    )
+    return train_index, test_index
 
-    # Descarga (o reutiliza la caché) del tokenizer y del modelo en la
-    # revisión fijada. Los pesos quedan en ~/.cache/huggingface, no en el repo.
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, revision=MODEL_REVISION)
-    model = AutoModelForSequenceClassification.from_pretrained(
-        MODEL_ID, revision=MODEL_REVISION
+
+def build_kmeans() -> Pipeline:
+    """K-Means dentro de un pipeline con escalado.
+
+    El escalado es imprescindible: MedInc se mueve en decenas de miles de
+    dólares (0.5-15) y las coordenadas en decenas de grados. Sin escalar,
+    la distancia euclídea quedaría dominada por latitud y longitud.
+    """
+    return Pipeline(
+        [
+            ("scaler", StandardScaler()),
+            (
+                "kmeans",
+                KMeans(n_clusters=N_CLUSTERS, n_init=10, random_state=RANDOM_STATE),
+            ),
+        ]
     )
 
-    # El pipeline se crea una sola vez y se reutiliza para todas las reseñas.
-    return pipeline(
-        "sentiment-analysis",
-        model=model,
-        tokenizer=tokenizer,
-        device=-1,  # CPU: 500 short reviews run in well under a minute.
-        truncation=True,
-        max_length=MAX_LENGTH,
-    )
 
-
-def _parse_prediction(predictions: list[dict]) -> dict:
-    """Convierte la salida del pipeline en estrellas, banda, confianza y probabilidades."""
-    # top_k=5 devuelve las cinco etiquetas: construimos estrella -> probabilidad.
-    probabilities = {
-        int(item["label"].split()[0]): float(item["score"]) for item in predictions
+def build_classifier_candidates() -> dict[str, Pipeline]:
+    """Candidatos supervisados. Todos incluyen su propio escalador."""
+    return {
+        "LogisticRegression": Pipeline(
+            [
+                ("scaler", StandardScaler()),
+                (
+                    "model",
+                    LogisticRegression(max_iter=1_000, random_state=RANDOM_STATE),
+                ),
+            ]
+        ),
+        "RandomForest": Pipeline(
+            [
+                ("scaler", StandardScaler()),
+                (
+                    "model",
+                    RandomForestClassifier(
+                        n_estimators=200,
+                        random_state=RANDOM_STATE,
+                        n_jobs=-1,
+                    ),
+                ),
+            ]
+        ),
+        "KNeighbors": Pipeline(
+            [
+                ("scaler", StandardScaler()),
+                ("model", KNeighborsClassifier(n_neighbors=15)),
+            ]
+        ),
     }
-    # La etiqueta con mayor score es la estrella predicha.
-    best = max(predictions, key=lambda item: item["score"])
-    predicted_stars = int(best["label"].split()[0])
 
-    # expected_stars es una media ponderada: útil para ver la incertidumbre
-    # sin colapsar todo a la clase ganadora.
-    parsed = {
-        "predicted_stars": predicted_stars,
-        "predicted_label": best["label"],
-        "confidence": float(best["score"]),
-        "expected_stars": sum(stars * probabilities[stars] for stars in range(1, 6)),
+
+def compare_classifiers(
+    X_train: pd.DataFrame, y_train: pd.Series
+) -> tuple[str, dict[str, dict[str, float]]]:
+    """Compara candidatos con validación cruzada estratificada de 5 folds."""
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=RANDOM_STATE)
+    scores: dict[str, dict[str, float]] = {}
+
+    for name, pipeline in build_classifier_candidates().items():
+        fold_scores = cross_val_score(
+            pipeline, X_train, y_train, cv=cv, scoring="accuracy", n_jobs=-1
+        )
+        scores[name] = {
+            "accuracy_mean": float(fold_scores.mean()),
+            "accuracy_std": float(fold_scores.std()),
+        }
+        print(f"  {name:<20} accuracy CV = {fold_scores.mean():.4f} ± {fold_scores.std():.4f}")
+
+    best_name = max(scores, key=lambda name: scores[name]["accuracy_mean"])
+    return best_name, scores
+
+
+def cluster_profiles(
+    df: pd.DataFrame, labels: np.ndarray, centroids_latlon: np.ndarray
+) -> list[dict]:
+    """Resume cada cluster: tamaño, renta y centro geográfico."""
+    labeled = df.assign(cluster=labels)
+    grouped = labeled.groupby("cluster", observed=True)
+    profiles = []
+
+    for cluster_id, group in grouped:
+        profiles.append(
+            {
+                "cluster": int(cluster_id),
+                "n": int(len(group)),
+                "share_pct": round(100 * len(group) / len(labeled), 2),
+                "medinc_mean": round(float(group["MedInc"].mean()), 3),
+                "medinc_median": round(float(group["MedInc"].median()), 3),
+                "latitude_mean": round(float(group["Latitude"].mean()), 3),
+                "longitude_mean": round(float(group["Longitude"].mean()), 3),
+                "centroid_latitude": round(float(centroids_latlon[cluster_id, 0]), 3),
+                "centroid_longitude": round(float(centroids_latlon[cluster_id, 1]), 3),
+            }
+        )
+
+    return profiles
+
+
+def evaluate_classifier(model: Pipeline, X_test: pd.DataFrame, y_test: pd.Series) -> dict:
+    """Calcula las métricas principales sobre el conjunto de test."""
+    y_pred = model.predict(X_test)
+    report = classification_report(
+        y_test, y_pred, output_dict=True, zero_division=0
+    )
+
+    return {
+        "y_pred": y_pred,
+        "accuracy": float(accuracy_score(y_test, y_pred)),
+        "balanced_accuracy": float(balanced_accuracy_score(y_test, y_pred)),
+        "f1_macro": float(f1_score(y_test, y_pred, average="macro")),
+        "classification_report": report,
+        "confusion_matrix": confusion_matrix(y_test, y_pred).tolist(),
     }
-    for stars in range(1, 6):
-        parsed[f"prob_{stars}_star"] = probabilities[stars]
-    return parsed
 
 
-def score_reviews(df: pd.DataFrame, sentiment_pipeline) -> pd.DataFrame:
-    """Puntúa todas las reseñas en una sola llamada batch y enriquece el dataframe."""
-    # Una única llamada en batch: el modelo no se recarga por reseña.
-    predictions = sentiment_pipeline(
-        df["review_text"].tolist(),
-        batch_size=BATCH_SIZE,
-        truncation=True,
-        max_length=MAX_LENGTH,
-        top_k=5,
+def save_artifacts(
+    kmeans_pipeline: Pipeline,
+    classifier: Pipeline,
+    df: pd.DataFrame,
+    labels: np.ndarray,
+    test_labels: np.ndarray,
+    train_index: pd.Index,
+    test_index: pd.Index,
+    best_name: str,
+    cv_scores: dict,
+    metrics: dict,
+    profiles: list[dict],
+) -> None:
+    """Guarda modelos, métricas y el dataset etiquetado."""
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    PROCESSED_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    # Los dos artefactos son autocontenidos: cada uno lleva su StandardScaler.
+    joblib.dump(kmeans_pipeline, KMEANS_PATH)
+    joblib.dump(classifier, CLASSIFIER_PATH)
+
+    # Dataset etiquetado: posición original, split y cluster.
+    labeled = df.copy()
+    labeled["split"] = "train"
+    labeled.loc[test_index, "split"] = "test"
+    labeled["cluster"] = pd.NA
+    labeled.loc[train_index, "cluster"] = labels
+    labeled.loc[test_index, "cluster"] = test_labels
+    labeled["cluster"] = labeled["cluster"].astype(int).astype("category")
+    labeled.to_csv(PROCESSED_PATH, index=True, index_label="row_id")
+
+    metadata = {
+        "project": "California Housing K-Means",
+        "features": FEATURES,
+        "n_clusters": N_CLUSTERS,
+        "random_state": RANDOM_STATE,
+        "test_size": TEST_SIZE,
+        "n_train": int(len(train_index)),
+        "n_test": int(len(test_index)),
+        "kmeans": {
+            "params": {
+                "n_clusters": N_CLUSTERS,
+                "n_init": 10,
+                "random_state": RANDOM_STATE,
+            },
+            "inertia_train": float(kmeans_pipeline.named_steps["kmeans"].inertia_),
+            "silhouette_test": float(
+                silhouette_score(
+                    kmeans_pipeline.named_steps["scaler"].transform(
+                        df.loc[test_index]
+                    ),
+                    test_labels,
+                )
+            ),
+        },
+        "classifier": {
+            "selected": best_name,
+            "cv_accuracy": cv_scores,
+            "test_accuracy": metrics["accuracy"],
+            "test_balanced_accuracy": metrics["balanced_accuracy"],
+            "test_f1_macro": metrics["f1_macro"],
+            "confusion_matrix": metrics["confusion_matrix"],
+        },
+        "cluster_profiles": profiles,
+        "versions": {
+            "python": ".".join(map(str, __import__("sys").version_info[:3])),
+            "scikit-learn": sklearn.__version__,
+            "pandas": pd.__version__,
+            "numpy": np.__version__,
+            "joblib": joblib.__version__,
+        },
+    }
+    METADATA_PATH.write_text(
+        json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-
-    # Parseamos cada salida y la unimos al dataframe original por posición.
-    parsed = pd.DataFrame([_parse_prediction(row) for row in predictions])
-    scored = pd.concat([df.reset_index(drop=True), parsed], axis=1)
-
-    # Derivamos la banda del modelo, la banda implícita por estrellas y los
-    # desacuerdos. Un falso negativo estricto es 4-5★ humano -> 1-2★ modelo.
-    scored["predicted_sentiment"] = scored["predicted_stars"].map(STAR_TO_BAND)
-    scored["star_implied_sentiment"] = scored["rating"].map(STAR_TO_BAND)
-    scored["agrees_with_rating"] = (
-        scored["predicted_sentiment"] == scored["star_implied_sentiment"]
-    )
-    scored["is_false_negative"] = (scored["rating"] >= 4) & (
-        scored["predicted_stars"] <= 2
-    )
-    scored["model_id"] = MODEL_ID
-    scored["model_revision"] = MODEL_REVISION
-
-    # Validaciones antes de devolver el resultado.
-    if len(scored) != len(df):
-        raise ValueError("Prediction count does not match review count")
-    if scored["predicted_stars"].isna().any():
-        raise ValueError("Some reviews did not receive a prediction")
-    if not scored["predicted_stars"].between(1, 5).all():
-        raise ValueError("Predicted stars must be between 1 and 5")
-
-    return scored[OUTPUT_COLUMNS]
-
-
-def write_outputs(scored: pd.DataFrame, path: Path = PROCESSED_PATH) -> None:
-    # Creamos data/processed si no existe y escribimos en UTF-8.
-    path.parent.mkdir(parents=True, exist_ok=True)
-    scored.to_csv(path, index=False, encoding="utf-8")
 
 
 def main() -> None:
-    # Carga de datos y modelo: una sola instanciación por ejecución.
-    df = load_reviews()
-    print(f"Loaded {len(df)} reviews from {RAW_PATH}")
+    print("1. Cargando datos...")
+    df = load_data()
+    print(f"   {len(df):,} filas | features: {', '.join(FEATURES)}")
 
-    sentiment_pipeline = load_sentiment_pipeline()
-    print(f"Model: {MODEL_ID} @ {MODEL_REVISION}")
+    print("2. Dividiendo en train/test...")
+    train_index, test_index = split_data(df)
+    X_train = df.loc[train_index]
+    X_test = df.loc[test_index]
+    print(f"   train={len(X_train):,} | test={len(X_test):,}")
 
-    # Inferencia y escritura del artefacto de producción.
-    scored = score_reviews(df, sentiment_pipeline)
-    write_outputs(scored)
+    print("3. Entrenando K-Means (k=6)...")
+    kmeans_pipeline = build_kmeans()
+    kmeans_pipeline.fit(X_train)
+    labels = kmeans_pipeline.predict(X_train)
+    test_labels = kmeans_pipeline.predict(X_test)
 
-    # Resumen para consola: distribución, calibración y falsos negativos.
-    counts = (
-        scored["predicted_sentiment"]
-        .value_counts()
-        .reindex(SENTIMENT_ORDER, fill_value=0)
+    X_train_scaled = kmeans_pipeline.named_steps["scaler"].transform(X_train)
+    X_test_scaled = kmeans_pipeline.named_steps["scaler"].transform(X_test)
+    print(f"   inertia train = {kmeans_pipeline.named_steps['kmeans'].inertia_:,.1f}")
+    print(
+        "   silhouette test = "
+        f"{silhouette_score(X_test_scaled, test_labels):.4f}"
     )
-    print(f"Predicted sentiment: {counts.to_dict()}")
-    print(f"Mean human rating: {scored['rating'].mean():.3f}")
-    print(f"Mean predicted stars: {scored['predicted_stars'].mean():.3f}")
-    print(f"Mean expected stars: {scored['expected_stars'].mean():.3f}")
-    print(f"Agreement with star-implied band: {scored['agrees_with_rating'].mean():.1%}")
-    print(f"Strict false negatives: {int(scored['is_false_negative'].sum())}")
-    print(f"Wrote {len(scored)} rows to {PROCESSED_PATH}")
+
+    # Centroides en unidades originales para poder graficarlos.
+    centroids_scaled = kmeans_pipeline.named_steps["kmeans"].cluster_centers_
+    centroids_latlon = (
+        kmeans_pipeline.named_steps["scaler"].inverse_transform(centroids_scaled)
+    )
+
+    print("4. Comparando clasificadores supervisados...")
+    best_name, cv_scores = compare_classifiers(X_train, pd.Series(labels))
+    print(f"   Seleccionado: {best_name}")
+
+    print("5. Evaluando el clasificador sobre test...")
+    classifier = build_classifier_candidates()[best_name]
+    classifier.fit(X_train, labels)
+    metrics = evaluate_classifier(classifier, X_test, pd.Series(test_labels))
+    print(f"   accuracy={metrics['accuracy']:.4f} | "
+          f"balanced={metrics['balanced_accuracy']:.4f} | "
+          f"f1_macro={metrics['f1_macro']:.4f}")
+
+    print("6. Guardando artefactos...")
+    profiles = cluster_profiles(X_train, labels, centroids_latlon)
+    save_artifacts(
+        kmeans_pipeline=kmeans_pipeline,
+        classifier=classifier,
+        df=df,
+        labels=labels,
+        test_labels=test_labels,
+        train_index=train_index,
+        test_index=test_index,
+        best_name=best_name,
+        cv_scores=cv_scores,
+        metrics=metrics,
+        profiles=profiles,
+    )
+    print(f"   {KMEANS_PATH}")
+    print(f"   {CLASSIFIER_PATH}")
+    print(f"   {PROCESSED_PATH}")
+    print(f"   {METADATA_PATH}")
 
 
 if __name__ == "__main__":

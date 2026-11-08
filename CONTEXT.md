@@ -1,29 +1,59 @@
-# Prompt de EDA — reseñas WeLoveReviews
+# Contexto del proyecto — Agrupación de casas de California
 
-Copia todo lo que está debajo de esta línea en tu agente de código (Cursor, Copilot, Claude Code, etc.).
+## Objetivo
 
----
+Clasificar casas de California según la región en la que se encuentran y la
+renta media de su bloque censal. El resultado se usa para etiquetar datos no
+supervisados con K-Means y, después, entrenar un clasificador supervisado que
+asigne esas etiquetas a puntos nuevos.
 
-Estás ayudando a un ingeniero de IA a explorar un dataset de reseñas de clientes antes de cualquier trabajo de modelado.
+## Dataset
 
-Contexto:
+`data/raw/housing.csv` — California Housing (censo de 1990). 20.640 filas, una
+por grupo de bloques censales. Solo se usan tres columnas:
 
-- Cliente: reseñas de servicio estilo WeLoveReviews / Harbor House Café
-- Boilerplate: 4GeeksAcademy machine-learning-python-template
-- Archivo: `data/raw/reviews.csv` (columnas: `review_id`, `rating`, `review_text`)
-- Pregunta de negocio (solo como contexto — no resuelvas el proyecto completo): si el sentimiento escrito se alinea con un promedio de ~4.5 / 5 estrellas
+| Columna     | Significado                                             |
+| ----------- | ------------------------------------------------------- |
+| `Latitude`  | Latitud del bloque censal                               |
+| `Longitude` | Longitud del bloque censal                              |
+| `MedInc`    | Renta mediana del bloque, en decenas de miles de USD    |
 
-Tu trabajo en el notebook del proyecto `src/explore.ipynb`:
+Fuente: <https://breathecode.herokuapp.com/asset/internal-link?id=809&path=housing.csv>
 
-1. Explorar el dataset (forma, dtypes, valores faltantes, distribución de ratings, estadísticas de longitud de texto, una pequeña muestra de textos de reseñas).
-2. Destacar los insights más importantes que más adelante justifiquen un plan de acción (mantén la lista de insights corta y accionable).
-3. Proponer acciones de limpieza solo si hacen falta; si no hacen falta, explica por qué.
+## Decisiones de diseño
 
-Reglas:
+- **Split 80/20** con `random_state=42`. El test no participa en el ajuste del
+  K-Means; solo se usa para comprobar la asignación de clusters y las métricas
+  del clasificador.
+- **`StandardScaler` antes de K-Means.** Sin escalar, la distancia euclídea
+  estaría dominada por latitud y longitud (decenas de grados) y `MedInc`
+  (0,5–15) sería irrelevante. Escalar da el mismo peso a las tres variables.
+- **k = 6** fijado por el enunciado. En el notebook se revisan codo y
+  silhouette solo como comprobación, no para cambiarlo.
+- **Dos artefactos autocontenidos**: cada `.joblib` incluye su propio
+  `StandardScaler`, así que se pueden usar sin recordar cómo se escaló.
+- **El clasificador aprende etiquetas derivadas de las mismas features.** Un
+  accuracy muy alto es esperado (los clusters de K-Means son regiones de
+  Voronoi); su utilidad es asignar etiquetas sin cargar el K-Means.
 
-- Escribe markdown breve entre celdas de código que explique la transición al siguiente paso (tono tutorial, texto mínimo).
-- No ejecutes modelos de sentimiento.
-- No escribas ni modifiques `src/app.py`.
-- No produzcas un informe markdown para el cliente.
-- No afirmes que el proyecto completo está terminado — detente después de la exploración, los insights y la propuesta de limpieza.
-- Mantén el trabajo en `src/explore.ipynb`.
+## Estructura
+
+```
+data/raw/housing.csv                     dataset original
+data/processed/housing_clusters.csv      train + test con columna cluster
+models/kmeans_housing.joblib             StandardScaler + KMeans
+models/classifier_housing.joblib         StandardScaler + clasificador
+models/metadata.json                     features, métricas, perfiles, versiones
+src/explore.ipynb                        análisis paso a paso
+src/app.py                               pipeline reproducible de extremo a extremo
+```
+
+## Ejecución
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python src/app.py
+jupyter lab src/explore.ipynb
+```

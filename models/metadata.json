@@ -1,0 +1,167 @@
+{
+  "project": "California Housing K-Means",
+  "features": [
+    "Latitude",
+    "Longitude",
+    "MedInc"
+  ],
+  "n_clusters": 6,
+  "random_state": 42,
+  "test_size": 0.2,
+  "n_train": 16512,
+  "n_test": 4128,
+  "kmeans": {
+    "params": {
+      "n_clusters": 6,
+      "n_init": 10,
+      "random_state": 42
+    },
+    "inertia_train": 8069.187859270178,
+    "silhouette_test": 0.3987086713190586
+  },
+  "classifier": {
+    "selected": "RandomForest",
+    "cv_accuracy": {
+      "LogisticRegression": {
+        "accuracy_mean": 0.9901285526272117,
+        "accuracy_std": 0.0017913771892917596
+      },
+      "RandomForest": {
+        "accuracy_mean": 0.9938832656397933,
+        "accuracy_std": 0.0007987315982796435
+      },
+      "KNeighbors": {
+        "accuracy_mean": 0.9881904617299069,
+        "accuracy_std": 0.001980530415012939
+      }
+    },
+    "test_accuracy": 0.9956395348837209,
+    "test_balanced_accuracy": 0.9923396096328165,
+    "test_f1_macro": 0.9939763060926651,
+    "confusion_matrix": [
+      [
+        332,
+        1,
+        0,
+        3,
+        1,
+        0
+      ],
+      [
+        0,
+        827,
+        0,
+        0,
+        0,
+        2
+      ],
+      [
+        0,
+        2,
+        110,
+        0,
+        0,
+        0
+      ],
+      [
+        1,
+        0,
+        0,
+        956,
+        5,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        2,
+        512,
+        0
+      ],
+      [
+        0,
+        1,
+        0,
+        0,
+        0,
+        1373
+      ]
+    ]
+  },
+  "cluster_profiles": [
+    {
+      "cluster": 0,
+      "n": 1321,
+      "share_pct": 8.0,
+      "medinc_mean": 2.625,
+      "medinc_median": 2.556,
+      "latitude_mean": 36.082,
+      "longitude_mean": -119.728,
+      "centroid_latitude": 36.083,
+      "centroid_longitude": -119.728
+    },
+    {
+      "cluster": 1,
+      "n": 3380,
+      "share_pct": 20.47,
+      "medinc_mean": 5.312,
+      "medinc_median": 5.105,
+      "latitude_mean": 33.868,
+      "longitude_mean": -118.024,
+      "centroid_latitude": 33.868,
+      "centroid_longitude": -118.025
+    },
+    {
+      "cluster": 2,
+      "n": 453,
+      "share_pct": 2.74,
+      "medinc_mean": 10.444,
+      "medinc_median": 10.124,
+      "latitude_mean": 34.901,
+      "longitude_mean": -119.237,
+      "centroid_latitude": 34.893,
+      "centroid_longitude": -119.228
+    },
+    {
+      "cluster": 3,
+      "n": 3931,
+      "share_pct": 23.81,
+      "medinc_mean": 2.835,
+      "medinc_median": 2.885,
+      "latitude_mean": 38.346,
+      "longitude_mean": -121.901,
+      "centroid_latitude": 38.345,
+      "centroid_longitude": -121.9
+    },
+    {
+      "cluster": 4,
+      "n": 2239,
+      "share_pct": 13.56,
+      "medinc_mean": 5.518,
+      "medinc_median": 5.22,
+      "latitude_mean": 37.702,
+      "longitude_mean": -121.939,
+      "centroid_latitude": 37.702,
+      "centroid_longitude": -121.94
+    },
+    {
+      "cluster": 5,
+      "n": 5188,
+      "share_pct": 31.42,
+      "medinc_mean": 2.781,
+      "medinc_median": 2.848,
+      "latitude_mean": 33.816,
+      "longitude_mean": -117.817,
+      "centroid_latitude": 33.817,
+      "centroid_longitude": -117.816
+    }
+  ],
+  "versions": {
+    "python": "3.12.8",
+    "scikit-learn": "1.9.1",
+    "pandas": "3.1.1",
+    "numpy": "2.5.4",
+    "joblib": "1.6.0"
+  }
+}
